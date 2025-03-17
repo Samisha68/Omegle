@@ -1,10 +1,14 @@
 // src/app/layout.tsx
-import SolanaProviders from '@/app/components/SolanaProviders';
-import './globals.css';
+import "./globals.css";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import ClientLayout from "./ClientLayout";
 
-export const metadata = {
-  title: 'Solana Video Chat',
-  description: 'On-chain video chat platform on Solana',
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "Solana Video Chat",
+  description: "P2P video chat powered by Solana wallet authentication",
 };
 
 export default function RootLayout({
@@ -14,10 +18,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <SolanaProviders>
-          {children}
-        </SolanaProviders>
+      <body className={inter.className}>
+        <ClientLayout>{children}</ClientLayout>
       </body>
     </html>
   );

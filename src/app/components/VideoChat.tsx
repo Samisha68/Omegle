@@ -9,12 +9,16 @@ import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash, FaPhoneSlash } 
 interface VideoChatProps {
   onPeerConnect: (connection: RTCPeerConnection, walletAddress: string) => void;
   onEndChat: () => void;
+  targetUserId?: string | null; // Optional: specific user to connect with
 }
 
 // Update the signaling server URL to use the correct port
-const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com';
+const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 
+  (typeof window !== 'undefined' && window.location.hostname === 'localhost' 
+    ? '/api/signaling' 
+    : 'https://solana-video-chat-signaling.onrender.com');
 
-const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
+const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId }) => {
   const { publicKey } = useWallet();
   const [isConnecting, setIsConnecting] = useState<boolean>(true);
   const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -45,7 +49,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     };
   }, []);
 
-  const connectToSignalingServer = () => {
+  const connectToSignalingServer = async () => {
     try {
       // Ensure we're using the correct URL without port number
       const serverUrl = SIGNALING_SERVER.includes(':10000') 
@@ -54,116 +58,155 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       console.log('Attempting to connect to signaling server:', serverUrl);
       
-      // Simplified Socket.IO configuration that focuses on reliability
+      // Simple socket.io configuration that avoids CORS issues
       const socket = io(serverUrl, {
-        transports: ['websocket', 'polling'],
+        transports: ['polling'], // Start with long-polling only
         reconnection: true,
         reconnectionAttempts: MAX_RETRIES,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 30000, // Increased timeout
+        timeout: 20000,
+        path: serverUrl.includes('/api/signaling') ? '/socket.io' : undefined,
         query: {
-          walletAddress: publicKey?.toString() || 'unknown'
+          walletAddress: publicKey?.toString() || 'unknown',
+          // If we have a targetUserId, we're doing a direct connection
+          ...(targetUserId ? { targetUserId, mode: 'direct' } : { mode: 'random' })
         }
       });
 
       socketRef.current = socket;
-
+      
       socket.on('connect', () => {
         console.log('Connected to signaling server successfully');
+        
         setIsConnecting(false);
         setIsConnected(true);
         setRetryCount(0);
         setError(null);
         
         // Tell server we're waiting for a match
-        socket.emit('waiting', {
-          walletAddress: publicKey?.toString() || 'unknown',
-          timestamp: Date.now()
-        });
-      });
-
-      socket.on('connect_error', (err) => {
-        console.error('Connection error:', err);
-        let errorMessage = `Failed to connect to signaling server: ${err.message}`;
-        
-        // Provide more helpful error messages based on common issues
-        if (err.message === 'timeout') {
-          errorMessage = 'Connection to server timed out. The server might be down or overloaded.';
-        } else if (err.message.includes('CORS')) {
-          errorMessage = 'Cross-Origin Request blocked. This is a server configuration issue.';
-        } else if (err.message.includes('xhr poll error')) {
-          errorMessage = 'Network connection issue. Please check your internet connection.';
+        if (!targetUserId) {
+          socket.emit('waiting', {
+            walletAddress: publicKey?.toString() || 'unknown',
+            timestamp: Date.now()
+          });
         }
-        
-        setError(errorMessage);
-        setIsConnected(false);
-        
-        // Attempt to reconnect if we haven't exceeded max retries
-        if (retryCount < MAX_RETRIES) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            setRetryCount(prev => prev + 1);
-            connectToSignalingServer();
-          }, 2000);
-        }
+        // For direct connections, the server should handle it based on the query params
       });
 
-      socket.on('disconnect', (reason) => {
-        console.log('Disconnected from signaling server:', reason);
-        setIsConnected(false);
-        
-        if (reason === 'io server disconnect') {
-          // Server initiated disconnect, try to reconnect
-          socket.connect();
-        }
-      });
-
-      socket.on('matched', ({ peer, peerWallet }) => {
-        console.log(`Matched with peer: ${peer}`);
-        setPeerWalletAddress(peerWallet);
-        createPeerConnection(peer);
-      });
-
-      socket.on('offer', async ({ from, offer }) => {
-        console.log(`Received offer from: ${from}`);
-        if (!peerConnectionRef.current) {
-          createPeerConnection(from);
-        }
-        
-        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await peerConnectionRef.current?.createAnswer();
-        await peerConnectionRef.current?.setLocalDescription(answer);
-        
-        socket.emit('answer', {
-          to: from,
-          answer
-        });
-      });
-
-      socket.on('answer', async ({ from, answer }) => {
-        console.log(`Received answer from: ${from}`);
-        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
-      });
-
-      socket.on('ice-candidate', async ({ from, candidate }) => {
-        console.log(`Received ICE candidate from: ${from}`);
-        try {
-          await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('Error adding ICE candidate:', err);
-        }
-      });
-
-      socket.on('chat-ended', ({ reason }) => {
-        console.log(`Chat ended: ${reason}`);
-        cleanupAndReset();
-        onEndChat();
-      });
-
+      // Set up all event handlers
+      setupSocketEventHandlers(socket);
+      
     } catch (err) {
       console.error('Error in connectToSignalingServer:', err);
       setError("Failed to establish connection to signaling server");
     }
+  };
+
+  // Extract event handler setup to a separate function to avoid duplication
+  const setupSocketEventHandlers = (socket: Socket) => {
+    socket.on('connect_error', (err) => {
+      console.error('Connection error:', err);
+      let errorMessage = `Failed to connect to signaling server: ${err.message}`;
+      
+      // Provide more helpful error messages based on common issues
+      if (err.message === 'timeout') {
+        errorMessage = 'Connection to server timed out. The server might be down or overloaded.';
+      } else if (err.message.includes('CORS')) {
+        errorMessage = 'Cross-Origin Request blocked. This might be a browser security setting.';
+      } else if (err.message.includes('xhr poll error')) {
+        errorMessage = 'Network connection issue. Please check your internet connection.';
+      }
+      
+      setError(errorMessage);
+      setIsConnected(false);
+      
+      // Attempt to reconnect if we haven't exceeded max retries
+      if (retryCount < MAX_RETRIES) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          setRetryCount(prev => prev + 1);
+          socket.connect(); // Try to reconnect this socket instead of creating a new one
+        }, 2000);
+      }
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log('Disconnected from signaling server:', reason);
+      setIsConnected(false);
+      
+      if (reason === 'io server disconnect' || reason === 'transport close') {
+        // Server initiated disconnect or transport closed, try to reconnect
+        console.log('Attempting to reconnect after disconnect');
+        socket.connect();
+      }
+    });
+
+    socket.on('error', (error) => {
+      console.error('Socket error:', error);
+      setError(`Socket error: ${error.message || 'Unknown error'}`);
+    });
+
+    socket.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`Reconnection attempt ${attemptNumber}`);
+    });
+
+    socket.on('reconnect', (attemptNumber) => {
+      console.log(`Reconnected after ${attemptNumber} attempts`);
+      setError(null);
+      setIsConnected(true);
+      setIsConnecting(false);
+      
+      // Re-emit waiting status
+      socket.emit('waiting', {
+        walletAddress: publicKey?.toString() || 'unknown',
+        timestamp: Date.now()
+      });
+    });
+
+    socket.on('matched', ({ peer, peerWallet }) => {
+      console.log(`Matched with peer: ${peer}`);
+      setPeerWalletAddress(peerWallet);
+      createPeerConnection(peer);
+    });
+
+    socket.on('offer', async ({ from, offer }) => {
+      console.log(`Received offer from: ${from}`);
+      if (!peerConnectionRef.current) {
+        createPeerConnection(from);
+      }
+      
+      await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peerConnectionRef.current?.createAnswer();
+      await peerConnectionRef.current?.setLocalDescription(answer);
+      
+      socket.emit('answer', {
+        to: from,
+        answer
+      });
+    });
+
+    socket.on('answer', async ({ from, answer }) => {
+      console.log(`Received answer from: ${from}`);
+      try {
+        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (error) {
+        console.error('Error setting remote description from answer:', error);
+        setError('Failed to establish peer connection. Try refreshing the page.');
+      }
+    });
+
+    socket.on('ice-candidate', async ({ from, candidate }) => {
+      console.log(`Received ICE candidate from: ${from}`);
+      try {
+        await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('Error adding ICE candidate:', err);
+      }
+    });
+
+    socket.on('chat-ended', ({ reason }) => {
+      console.log(`Chat ended: ${reason}`);
+      cleanupAndReset();
+      onEndChat();
+    });
   };
 
   // Connect to signaling server and set up media
@@ -207,7 +250,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       mounted = false;
       cleanupAndReset();
     };
-  }, [isMounted, publicKey, onPeerConnect, onEndChat, retryCount]);
+  }, [isMounted, publicKey, onPeerConnect, onEndChat, targetUserId]);
   
   const createPeerConnection = (peerId: string) => {
     try {
@@ -215,8 +258,14 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       const configuration: RTCConfiguration = { 
         iceServers: [
+          // Google's public STUN servers
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          
+          // Free TURN servers (openrelay)
           { 
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -226,9 +275,15 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
             urls: 'turn:openrelay.metered.ca:443',
             username: 'openrelayproject',
             credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
           }
         ],
-        iceCandidatePoolSize: 10
+        iceCandidatePoolSize: 10,
+        iceTransportPolicy: 'all'
       };
       
       const peerConnection = new RTCPeerConnection(configuration);
@@ -256,14 +311,48 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       peerConnection.oniceconnectionstatechange = () => {
         console.log('ICE connection state:', peerConnection.iceConnectionState);
+        logConnectionState(); // Log full state on any change
+        
         switch (peerConnection.iceConnectionState) {
           case 'connected':
+          case 'completed':
             console.log('ICE connection established');
             break;
           case 'disconnected':
+            console.log('ICE connection disconnected - this may be temporary');
+            // Don't reset immediately for disconnected, as it might recover
+            break;
           case 'failed':
+            console.log('ICE connection failed - attempting restart');
+            // Try ICE restart
+            peerConnection.restartIce();
+            break;
           case 'closed':
-            console.log('ICE connection failed or closed');
+            console.log('ICE connection closed');
+            cleanupAndReset();
+            break;
+        }
+      };
+      
+      peerConnection.onconnectionstatechange = () => {
+        console.log('Connection state changed:', peerConnection.connectionState);
+        
+        switch (peerConnection.connectionState) {
+          case 'connected':
+            console.log('Peer connection established');
+            setIsConnecting(false);
+            setIsConnected(true);
+            break;
+          case 'disconnected':
+            console.log('Peer connection disconnected');
+            break;
+          case 'failed':
+            console.log('Peer connection failed - attempting to reconnect');
+            // Try to restart ICE
+            peerConnection.restartIce();
+            break;
+          case 'closed':
+            console.log('Peer connection closed');
             cleanupAndReset();
             break;
         }
@@ -276,24 +365,6 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           setIsConnecting(false);
           setIsConnected(true);
           onPeerConnect(peerConnection, peerWalletAddress);
-        }
-      };
-      
-      peerConnection.onconnectionstatechange = () => {
-        console.log('Connection state changed:', peerConnection.connectionState);
-        switch (peerConnection.connectionState) {
-          case 'connected':
-            console.log('Peer connection established');
-            setIsConnecting(false);
-            setIsConnected(true);
-            onPeerConnect(peerConnection, peerWalletAddress);
-            break;
-          case 'disconnected':
-          case 'failed':
-          case 'closed':
-            console.log('Peer connection failed or closed');
-            cleanupAndReset();
-            break;
         }
       };
       
@@ -327,30 +398,16 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           offer: peerConnectionRef.current.localDescription
         });
       } else {
-        // Wait for ICE gathering to complete
-        const checkState = () => {
-          if (peerConnectionRef.current?.iceGatheringState === 'complete') {
+        // Set a timeout in case ICE gathering takes too long
+        setTimeout(() => {
+          if (peerConnectionRef.current?.localDescription) {
             socketRef.current?.emit('offer', {
               to: peerId,
               offer: peerConnectionRef.current.localDescription
             });
-            return true;
+            console.log('Sent offer after timeout');
           }
-          return false;
-        };
-        
-        if (!checkState()) {
-          // Set a timeout in case ICE gathering takes too long
-          setTimeout(() => {
-            if (peerConnectionRef.current?.localDescription) {
-              socketRef.current?.emit('offer', {
-                to: peerId,
-                offer: peerConnectionRef.current.localDescription
-              });
-              console.log('Sent offer after timeout');
-            }
-          }, 5000);
-        }
+        }, 5000);
       }
     } catch (err) {
       console.error('Error creating offer:', err);
@@ -449,6 +506,8 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
               <ul className="list-disc pl-5 mt-1">
                 <li>Refreshing the page</li>
                 <li>Checking your internet connection</li>
+                <li>Trying a different browser</li>
+                <li>Disabling any VPN or proxy services</li>
                 <li>Trying again later if the server is down</li>
               </ul>
               <button 
