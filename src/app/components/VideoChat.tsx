@@ -47,16 +47,21 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
 
   const connectToSignalingServer = () => {
     try {
-      console.log('Attempting to connect to signaling server:', SIGNALING_SERVER);
+      // Ensure we're using the correct URL without port number
+      const serverUrl = SIGNALING_SERVER.includes(':10000') 
+        ? SIGNALING_SERVER.replace(':10000', '')
+        : SIGNALING_SERVER;
+      
+      console.log('Attempting to connect to signaling server:', serverUrl);
       
       // Simplified Socket.IO configuration that focuses on reliability
-      const socket = io(SIGNALING_SERVER, {
+      const socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: MAX_RETRIES,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        timeout: 20000,
+        timeout: 30000, // Increased timeout
         query: {
           walletAddress: publicKey?.toString() || 'unknown'
         }
@@ -80,7 +85,18 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
 
       socket.on('connect_error', (err) => {
         console.error('Connection error:', err);
-        setError(`Failed to connect to signaling server: ${err.message}`);
+        let errorMessage = `Failed to connect to signaling server: ${err.message}`;
+        
+        // Provide more helpful error messages based on common issues
+        if (err.message === 'timeout') {
+          errorMessage = 'Connection to server timed out. The server might be down or overloaded.';
+        } else if (err.message.includes('CORS')) {
+          errorMessage = 'Cross-Origin Request blocked. This is a server configuration issue.';
+        } else if (err.message.includes('xhr poll error')) {
+          errorMessage = 'Network connection issue. Please check your internet connection.';
+        }
+        
+        setError(errorMessage);
         setIsConnected(false);
         
         // Attempt to reconnect if we haven't exceeded max retries
@@ -421,14 +437,50 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     <div className="video-chat relative">
       {error && (
         <div className="mb-4 p-3 bg-red-700 text-white rounded-lg shadow-lg">
-          {error}
-          {retryCount < MAX_RETRIES && (
+          <p className="font-bold">Connection Error:</p>
+          <p>{error}</p>
+          {retryCount < MAX_RETRIES ? (
             <div className="mt-2 text-sm">
               Retrying connection... ({retryCount + 1}/{MAX_RETRIES})
+            </div>
+          ) : (
+            <div className="mt-2 text-sm">
+              <p>Connection attempts failed. You can try:</p>
+              <ul className="list-disc pl-5 mt-1">
+                <li>Refreshing the page</li>
+                <li>Checking your internet connection</li>
+                <li>Trying again later if the server is down</li>
+              </ul>
+              <button 
+                onClick={() => {
+                  setRetryCount(0);
+                  setError(null);
+                  connectToSignalingServer();
+                }}
+                className="mt-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
+              >
+                Try Again
+              </button>
             </div>
           )}
         </div>
       )}
+      
+      {/* Connection Status Indicator */}
+      <div className="mb-4 text-center">
+        {isConnecting && !error && (
+          <div className="inline-flex items-center px-4 py-2 bg-yellow-500 bg-opacity-20 text-yellow-500 rounded-full">
+            <div className="w-2 h-2 bg-yellow-500 rounded-full mr-2 animate-pulse"></div>
+            Connecting to server...
+          </div>
+        )}
+        {isConnected && !isConnecting && (
+          <div className="inline-flex items-center px-4 py-2 bg-green-500 bg-opacity-20 text-green-500 rounded-full">
+            <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
+            Connected to server - Waiting for a match
+          </div>
+        )}
+      </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Local Video */}
@@ -521,16 +573,6 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           <FaPhoneSlash size={24} />
         </button>
       </div>
-
-      {/* Connection Status */}
-      {isConnected && (
-        <div className="mt-4 text-center">
-          <div className="inline-flex items-center px-4 py-2 bg-green-500 bg-opacity-20 text-green-500 rounded-full">
-            <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
-            Connected
-          </div>
-        </div>
-      )}
     </div>
   );
 };
