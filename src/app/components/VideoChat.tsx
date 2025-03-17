@@ -36,7 +36,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
   const [peerWalletAddress, setPeerWalletAddress] = useState<string>('');
   const [isMounted, setIsMounted] = useState<boolean>(false);
   const [retryCount, setRetryCount] = useState<number>(0);
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 5; // Increased retries
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -47,7 +47,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isVideoOff, setIsVideoOff] = useState<boolean>(false);
   const [isHovering, setIsHovering] = useState<boolean>(false);
-
+  
   // Handle component mounting
   useEffect(() => {
     setIsMounted(true);
@@ -65,20 +65,40 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       const serverUrl = getSignalingServer();
       
       console.log('Attempting to connect to signaling server:', serverUrl);
+
+      // Clear any existing socket connection
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current.close();
+      }
       
-      // Improved socket.io configuration
+      // Improved socket.io configuration with more debug options
       const socket = io(serverUrl, {
-        transports: ['websocket', 'polling'], // Try websocket first
+        transports: ['polling', 'websocket'], // Try polling first, then websocket (more reliable)
         reconnection: true,
         reconnectionAttempts: MAX_RETRIES,
         reconnectionDelay: 1000,
         timeout: 20000,
         withCredentials: false, // Disable credentials for CORS
+        forceNew: true, // Force a new connection
+        autoConnect: true,
+        path: '/socket.io/', // Explicitly set the path
         query: {
           walletAddress: publicKey?.toString() || 'unknown',
+          clientTime: Date.now(), // Add timestamp for debugging
           // If we have a targetUserId, we're doing a direct connection
           ...(targetUserId ? { targetUserId, mode: 'direct' } : { mode: 'random' })
         }
+      });
+
+      // Add transport error event handling
+      socket.io.on("error", (error) => {
+        console.error("Socket.io transport error:", error);
+        setError(`Transport error: ${error.message || 'Unknown error'}`);
+      });
+
+      socket.io.on("reconnect_attempt", () => {
+        console.log("Socket transport reconnect attempt");
       });
 
       socketRef.current = socket;
@@ -106,10 +126,10 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       
     } catch (err) {
       console.error('Error in connectToSignalingServer:', err);
-      setError("Failed to establish connection to signaling server");
+      setError(`Failed to establish connection to signaling server: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
-
+  
   // Extract event handler setup to a separate function to avoid duplication
   const setupSocketEventHandlers = (socket: Socket) => {
     socket.on('connect_error', (err) => {
@@ -173,6 +193,8 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
     socket.on('matched', ({ peer, peerWallet }) => {
       console.log(`Matched with peer: ${peer}`);
       setPeerWalletAddress(peerWallet);
+      
+      // Create the peer connection
       createPeerConnection(peer);
     });
 
@@ -225,7 +247,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
 
   // Connect to signaling server and set up media
   useEffect(() => {
-    if (!isMounted) return;
+    if (!isMounted || !publicKey) return;
 
     let mounted = true;
 
@@ -270,7 +292,6 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       cleanupAndReset();
     };
   }, [isMounted, publicKey, onPeerConnect, onEndChat, targetUserId]);
-  
   const createPeerConnection = (peerId: string) => {
     try {
       console.log('Creating peer connection with:', peerId);
@@ -450,6 +471,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
   };
   
   const handleEndChat = () => {
+    // Normal end chat flow
     socketRef.current?.emit('end-chat');
     cleanupAndReset();
     onEndChat();
@@ -547,7 +569,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
         {isConnected && !isConnecting && (
           <div className="inline-flex items-center px-4 py-2 bg-sonic-green bg-opacity-20 text-sonic-green rounded-full">
             <div className="w-2 h-2 bg-sonic-green rounded-full mr-2 animate-pulse"></div>
-            Connected to server - Waiting for a match
+            Connected to peer
           </div>
         )}
       </div>
@@ -648,3 +670,4 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
 };
 
 export default VideoChat;
+  

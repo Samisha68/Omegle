@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Lobby from './components/Lobby';
 import { FaUsers, FaRandom, FaChevronLeft, FaRing, FaVideo, FaBolt, FaGamepad } from 'react-icons/fa';
+import { useWallet } from '@solana/wallet-adapter-react';
 
 // Dynamically import wallet button with SSR disabled
 const WalletMultiButton = dynamic(
@@ -18,11 +19,18 @@ const VideoChat = dynamic(
   { ssr: false }
 );
 
+// Dynamically import WalletActions with SSR disabled
+const WalletActions = dynamic(
+  () => import('./components/WalletActions'),
+  { ssr: false }
+);
+
 export default function Home() {
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const [isVideoMode, setIsVideoMode] = useState<boolean>(false);
   const [selectedMode, setSelectedMode] = useState<'lobby' | 'random' | null>(null);
   const [mounted, setMounted] = useState(false);
+  const { publicKey } = useWallet();
   
   // Prevent hydration issues
   useEffect(() => {
@@ -61,8 +69,8 @@ export default function Home() {
       {/* Options Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
         <div 
-          onClick={() => setSelectedMode('lobby')}
-          className="bg-gray-800 border-2 border-sonic-blue rounded-xl overflow-hidden shadow-lg shadow-sonic-blue/20 hover:shadow-sonic-blue/40 transition-all duration-300 transform hover:translate-y-[-8px] hover:scale-[1.01]"
+          onClick={() => publicKey && setSelectedMode('lobby')}
+          className={`bg-gray-800 border-2 border-sonic-blue rounded-xl overflow-hidden shadow-lg shadow-sonic-blue/20 hover:shadow-sonic-blue/40 transition-all duration-300 transform hover:translate-y-[-8px] hover:scale-[1.01] ${!publicKey ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
         >
           <div className="h-4 bg-sonic-blue"></div>
           <div className="p-6">
@@ -96,10 +104,12 @@ export default function Home() {
         
         <div 
           onClick={() => {
-            setSelectedMode('random');
-            setIsVideoMode(true);
+            if (publicKey) {
+              setSelectedMode('random');
+              setIsVideoMode(true);
+            }
           }}
-          className="bg-gray-800 border-2 border-sonic-green rounded-xl overflow-hidden shadow-lg shadow-sonic-green/20 hover:shadow-sonic-green/40 transition-all duration-300 transform hover:translate-y-[-8px] hover:scale-[1.01]"
+          className={`bg-gray-800 border-2 border-sonic-green rounded-xl overflow-hidden shadow-lg shadow-sonic-green/20 hover:shadow-sonic-green/40 transition-all duration-300 transform hover:translate-y-[-8px] hover:scale-[1.01] ${!publicKey ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
         >
           <div className="h-4 bg-sonic-green"></div>
           <div className="p-6">
@@ -185,8 +195,12 @@ export default function Home() {
           </h1>
           <p className="text-gray-400">Connect your wallet to start chatting with the Sonic ecosystem</p>
         </div>
-        <div className="mt-6 md:mt-0">
-          <WalletMultiButton />
+        <div className="mt-6 md:mt-0 flex items-center gap-4">
+          {publicKey ? (
+            <WalletActions />
+          ) : (
+            <WalletMultiButton />
+          )}
         </div>
       </header>
 

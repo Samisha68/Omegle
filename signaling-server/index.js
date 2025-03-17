@@ -8,12 +8,14 @@ const app = express();
 // Create the HTTP server first
 const server = http.createServer(app);
 
-// Define allowed origins
+// Define allowed origins - being more permissive to fix CORS issues
 const allowedOrigins = [
   process.env.CLIENT_URL,
   'http://localhost:3000',
+  'http://localhost:3001',
   'https://omegle-alpha.vercel.app',
-  'https://*.vercel.app'  // Allow all Vercel subdomains
+  'https://*.vercel.app',  // Allow all Vercel subdomains
+  '*' // Allow all origins in development
 ].filter(Boolean);
 
 // Configure CORS for Express with specific options
@@ -22,7 +24,12 @@ app.use(cors({
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         
-        if (allowedOrigins.indexOf(origin) === -1) {
+        // In development, allow all origins
+        if (process.env.NODE_ENV !== 'production') {
+            return callback(null, true);
+        }
+        
+        if (allowedOrigins.indexOf(origin) === -1 && !allowedOrigins.includes('*')) {
             const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
             return callback(new Error(msg), false);
         }
@@ -42,9 +49,15 @@ app.options('*', cors());
 const io = new Server(server, {
     cors: {
         origin: function(origin, callback) {
+            // Allow requests with no origin (like mobile apps or curl requests)
             if (!origin) return callback(null, true);
             
-            if (allowedOrigins.indexOf(origin) === -1) {
+            // In development, allow all origins
+            if (process.env.NODE_ENV !== 'production') {
+                return callback(null, true);
+            }
+            
+            if (allowedOrigins.indexOf(origin) === -1 && !allowedOrigins.includes('*')) {
                 const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
                 return callback(new Error(msg), false);
             }
@@ -56,30 +69,30 @@ const io = new Server(server, {
         preflightContinue: false,
         optionsSuccessStatus: 204
     },
-    // Add transport options to help with connection issues
-    transports: ['websocket', 'polling'],
+    // Add transport options to help with connection issues - prefer polling first
+    transports: ['polling', 'websocket'],
     // Add ping timeout and interval to detect disconnections faster
-    pingTimeout: 10000,
-    pingInterval: 5000,
+    pingTimeout: 20000, // Increased timeout
+    pingInterval: 10000, // Increased interval
     // Add path configuration
     path: '/socket.io/',
     // Add allowEIO3 option for better compatibility
     allowEIO3: true,
     // Add connectTimeout
-    connectTimeout: 30000,
+    connectTimeout: 45000, // Increased timeout
     // Add cookie handling
-    cookie: {
-        name: 'io',
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none'
-    }
+    cookie: false // Disabled cookies to prevent issues
 });
 
 // Track available users waiting to be matched
 const waitingUsers = new Map();
 // Track active chat sessions
 const activeSessions = new Map();
+// Track online users (for lobby)
+const onlineUsers = new Map();
+
+// Define hardcoded user wallet address that you'll use to join
+const HARDCODED_WALLET = '4W17DTAWGYmRWbKKajUw4YsPDGex3xBgyCKvLJSCb6dT';
 
 // Add error event handling for Socket.io
 io.on('error', (error) => {
@@ -90,7 +103,83 @@ io.on('error', (error) => {
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
     
-    // User joins the waiting pool
+    // Get connection mode and wallet information
+    const mode = socket.handshake.query.mode || 'random';
+    const walletAddress = socket.handshake.query.walletAddress || 'unknown';
+    const walletProvider = socket.handshake.query.walletProvider || 'unknown';
+    
+    // Add user to online users
+    const userInfo = {
+        id: socket.id,
+        socketId: socket.id,
+        walletAddress,
+        walletProvider,
+        joinedAt: Date.now(),
+        isBackpackWallet: walletProvider.toLowerCase().includes('backpack')
+    };
+    
+    // Check if this is the hardcoded wallet
+    const isHardcodedWallet = walletAddress === HARDCODED_WALLET;
+    
+    onlineUsers.set(socket.id, userInfo);
+    
+    // Handle lobby mode
+    if (mode === 'lobby') {
+        // Broadcast the new user to all other users
+        socket.broadcast.emit('user_joined', userInfo);
+        
+        // Handle request for online users list
+        socket.on('get_online_users', () => {
+            const allUsers = Array.from(onlineUsers.values());
+            socket.emit('online_users', allUsers);
+        });
+        
+        // Handle initiating a chat from lobby with specific user
+        socket.on('initiate_chat', ({ targetUserId }) => {
+            console.log(`User ${socket.id} wants to chat with ${targetUserId}`);
+            
+            // Normal user-to-user chat setup
+            const targetSocket = io.sockets.sockets.get(targetUserId);
+            if (targetSocket) {
+                // Get target user info
+                const targetUser = onlineUsers.get(targetUserId);
+                
+                if (!targetUser) {
+                    socket.emit('error', { message: 'Target user not found' });
+                    return;
+                }
+                
+                // Create a session ID
+                const sessionId = `${socket.id}-${targetUserId}`;
+                
+                // Store the session
+                activeSessions.set(sessionId, {
+                    user1: socket.id,
+                    user2: targetUserId,
+                    user1Wallet: walletAddress,
+                    user2Wallet: targetUser.walletAddress,
+                    startedAt: Date.now()
+                });
+                
+                // Notify both users
+                socket.emit('matched', {
+                    peer: targetUserId,
+                    peerWallet: targetUser.walletAddress
+                });
+                
+                targetSocket.emit('matched', {
+                    peer: socket.id,
+                    peerWallet: walletAddress
+                });
+                
+                console.log(`Matched users from lobby: ${socket.id} and ${targetUserId}`);
+            } else {
+                socket.emit('error', { message: 'Selected user is no longer online' });
+            }
+        });
+    }
+    
+    // User joins the waiting pool for random matching
     socket.on('waiting', (userData) => {
         try {
             const { walletAddress } = userData;
@@ -176,6 +265,12 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         try {
             console.log(`User disconnected: ${socket.id}`);
+            
+            // Remove from online users list
+            onlineUsers.delete(socket.id);
+            
+            // Broadcast user left to lobby
+            socket.broadcast.emit('user_left', socket.id);
             
             // Remove from waiting pool if present
             if (waitingUsers.has(socket.id)) {
@@ -282,6 +377,13 @@ function matchUsers() {
     }
 }
 
+// Add HTTP/1.1 headers to improve WebSocket support
+app.use((req, res, next) => {
+    res.header('Connection', 'keep-alive');
+    res.header('Keep-Alive', 'timeout=30');
+    next();
+});
+
 // Add a health check route with more details
 app.get('/', (req, res) => {
     res.json({
@@ -289,7 +391,9 @@ app.get('/', (req, res) => {
         message: 'Signaling server is running',
         connections: io.sockets.sockets.size,
         waitingUsers: waitingUsers.size,
-        activeSessions: activeSessions.size
+        activeSessions: activeSessions.size,
+        onlineUsers: onlineUsers.size,
+        version: '1.1.0'
     });
 });
 
