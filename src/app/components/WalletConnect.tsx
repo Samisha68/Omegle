@@ -1,5 +1,7 @@
 // components/WalletConnect.tsx
-import { FC, useMemo } from 'react';
+'use client';
+
+import { FC, useMemo, useState, useEffect } from 'react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
 import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
@@ -10,6 +12,22 @@ import { clusterApiUrl } from '@solana/web3.js';
 
 
 const WalletConnect: FC = () => {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return (
+      <div className="flex justify-center">
+        <div className="connect-wallet-btn opacity-50">
+          Loading...
+        </div>
+      </div>
+    );
+  }
+
   // Define the network to use (devnet, testnet, or mainnet-beta)
   const network = WalletAdapterNetwork.Devnet;
   

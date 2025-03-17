@@ -18,22 +18,25 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [peerWalletAddress, setPeerWalletAddress] = useState<string>('');
-  const [isClient, setIsClient] = useState<boolean>(false);
+  const [isMounted, setIsMounted] = useState<boolean>(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  
-  // Add useEffect to handle client-side rendering
+
+  // Handle component mounting
   useEffect(() => {
-    setIsClient(true);
+    setIsMounted(true);
+    return () => setIsMounted(false);
   }, []);
-  
+
   // Connect to signaling server and set up media
   useEffect(() => {
-    if (!isClient) return; // Don't run on server-side
+    if (!isMounted) return;
+
+    let mounted = true;
 
     const startConnection = async () => {
       try {
@@ -43,6 +46,11 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           audio: true
         });
         
+        if (!mounted) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
@@ -53,14 +61,17 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           transports: ['websocket', 'polling'],
           reconnection: true,
           reconnectionAttempts: 5,
-          reconnectionDelay: 1000
+          reconnectionDelay: 1000,
+          forceNew: true
         });
         socketRef.current = socket;
         
         // Set up socket event handlers
         socket.on('connect', () => {
+          if (!mounted) return;
           console.log('Connected to signaling server');
           setIsConnecting(false);
+          setIsConnected(true);
           
           // Tell server we're waiting for a match
           socket.emit('waiting', {
@@ -69,10 +80,13 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         });
         
         socket.on('connect_error', (err) => {
+          if (!mounted) return;
+          console.error('Connection error:', err);
           setError(`Failed to connect to signaling server: ${err.message}`);
         });
         
         socket.on('matched', ({ peer, peerWallet }) => {
+          if (!mounted) return;
           console.log(`Matched with peer: ${peer}`);
           setPeerWalletAddress(peerWallet);
           
@@ -81,6 +95,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         });
         
         socket.on('offer', async ({ from, offer }) => {
+          if (!mounted) return;
           console.log(`Received offer from: ${from}`);
           if (!peerConnectionRef.current) {
             createPeerConnection(from);
@@ -100,11 +115,13 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         });
         
         socket.on('answer', async ({ from, answer }) => {
+          if (!mounted) return;
           console.log(`Received answer from: ${from}`);
           await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
         });
         
         socket.on('ice-candidate', async ({ from, candidate }) => {
+          if (!mounted) return;
           console.log(`Received ICE candidate from: ${from}`);
           try {
             await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
@@ -114,6 +131,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         });
         
         socket.on('chat-ended', ({ reason }) => {
+          if (!mounted) return;
           console.log(`Chat ended: ${reason}`);
           cleanupAndReset();
           
@@ -122,8 +140,9 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         });
         
       } catch (err) {
-        setError("Couldn't access camera and microphone");
-        console.error(err);
+        if (!mounted) return;
+        console.error('Error in startConnection:', err);
+        setError("Couldn't access camera and microphone. Please make sure you have granted the necessary permissions.");
       }
     };
     
@@ -131,9 +150,10 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     
     // Cleanup function
     return () => {
+      mounted = false;
       cleanupAndReset();
     };
-  }, []); // Empty dependency array - only run once on mount
+  }, [isMounted, publicKey, onPeerConnect, onEndChat]);
   
   const createPeerConnection = (peerId: string) => {
     try {
@@ -255,7 +275,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="relative">
-          {isClient && (
+          {isMounted && (
             <video
               ref={localVideoRef}
               autoPlay
@@ -279,7 +299,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
             </div>
           )}
           
-          {isClient && (
+          {isMounted && (
             <video
               ref={remoteVideoRef}
               autoPlay

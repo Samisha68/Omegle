@@ -1,7 +1,7 @@
 // src/app/page.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import WalletConnect from '@/app/components/WalletConnect';
 import VideoChat from '@/app/components/VideoChat';
@@ -11,6 +11,11 @@ export default function Home() {
   const [inChat, setInChat] = useState<boolean>(false);
   const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
   const [peerWalletAddress, setPeerWalletAddress] = useState<string>('');
+  const [mounted, setMounted] = useState<boolean>(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const startChat = (): void => {
     setInChat(true);
@@ -25,6 +30,23 @@ export default function Home() {
     setPeerConnection(connection);
     setPeerWalletAddress(walletAddress);
   };
+
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white">
+        <main className="container mx-auto px-4 py-10">
+          <h1 className="text-4xl font-bold text-center mb-8">Solana Video Chat</h1>
+          <div className="max-w-md mx-auto bg-gray-800 rounded-lg p-8 shadow-lg">
+            <h2 className="text-2xl font-semibold mb-6 text-center">Loading...</h2>
+            <div className="animate-pulse">
+              <div className="h-10 bg-gray-700 rounded mb-4"></div>
+              <div className="h-4 bg-gray-700 rounded w-3/4 mx-auto"></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white">
