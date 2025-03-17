@@ -12,11 +12,21 @@ interface VideoChatProps {
   targetUserId?: string | null; // Optional: specific user to connect with
 }
 
-// Update the signaling server URL to use the correct port
-const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 
-  (typeof window !== 'undefined' && window.location.hostname === 'localhost' 
-    ? '/api/signaling' 
-    : 'https://solana-video-chat-signaling.onrender.com');
+// Function to get correct signaling server URL
+const getSignalingServer = () => {
+  const serverUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 
+    (typeof window !== 'undefined' && window.location.hostname === 'localhost' 
+      ? 'http://localhost:3001' 
+      : 'https://solana-video-chat-signaling.onrender.com');
+      
+  // Ensure we're always using https in production
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && 
+      !serverUrl.startsWith('https://') && !serverUrl.includes('localhost')) {
+    return serverUrl.replace('http://', 'https://');
+  }
+  
+  return serverUrl;
+};
 
 const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId }) => {
   const { publicKey } = useWallet();
@@ -51,20 +61,19 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
 
   const connectToSignalingServer = async () => {
     try {
-      // Ensure we're using the correct URL without port number
-      const serverUrl = SIGNALING_SERVER.includes(':10000') 
-        ? SIGNALING_SERVER.replace(':10000', '')
-        : SIGNALING_SERVER;
+      // Ensure we're using the correct URL with proper protocol
+      const serverUrl = getSignalingServer();
       
       console.log('Attempting to connect to signaling server:', serverUrl);
       
-      // Simple socket.io configuration that avoids CORS issues
+      // Improved socket.io configuration
       const socket = io(serverUrl, {
-        transports: ['polling'], // Start with long-polling only
+        transports: ['websocket', 'polling'], // Try websocket first
         reconnection: true,
         reconnectionAttempts: MAX_RETRIES,
+        reconnectionDelay: 1000,
         timeout: 20000,
-        path: serverUrl.includes('/api/signaling') ? '/socket.io' : undefined,
+        withCredentials: false, // Disable credentials for CORS
         query: {
           walletAddress: publicKey?.toString() || 'unknown',
           // If we have a targetUserId, we're doing a direct connection
@@ -132,7 +141,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       console.log('Disconnected from signaling server:', reason);
       setIsConnected(false);
       
-      if (reason === 'io server disconnect' || reason === 'transport close') {
+      if (reason === 'io server disconnect' || reason === 'transport close' || reason === 'transport error') {
         // Server initiated disconnect or transport closed, try to reconnect
         console.log('Attempting to reconnect after disconnect');
         socket.connect();
@@ -173,14 +182,19 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
         createPeerConnection(from);
       }
       
-      await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peerConnectionRef.current?.createAnswer();
-      await peerConnectionRef.current?.setLocalDescription(answer);
-      
-      socket.emit('answer', {
-        to: from,
-        answer
-      });
+      try {
+        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnectionRef.current?.createAnswer();
+        await peerConnectionRef.current?.setLocalDescription(answer);
+        
+        socket.emit('answer', {
+          to: from,
+          answer
+        });
+      } catch (error) {
+        console.error('Error handling received offer:', error);
+        setError('Failed to process connection offer. Try refreshing the page.');
+      }
     });
 
     socket.on('answer', async ({ from, answer }) => {
@@ -239,7 +253,12 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       } catch (err) {
         if (!mounted) return;
         console.error('Error in startConnection:', err);
-        setError("Couldn't access camera and microphone. Please make sure you have granted the necessary permissions.");
+        
+        const errorMessage = err instanceof Error 
+          ? err.message
+          : "Couldn't access camera and microphone. Please make sure you have granted the necessary permissions.";
+          
+        setError(errorMessage);
       }
     };
     
@@ -391,24 +410,16 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       
       await peerConnectionRef.current.setLocalDescription(offer);
       
-      // Wait for ICE gathering to complete before sending the offer
-      if (peerConnectionRef.current.iceGatheringState === 'complete') {
-        socketRef.current?.emit('offer', {
+      // Wait a short time for ICE gathering before sending
+      setTimeout(() => {
+        if (!peerConnectionRef.current || !socketRef.current) return;
+        
+        socketRef.current.emit('offer', {
           to: peerId,
           offer: peerConnectionRef.current.localDescription
         });
-      } else {
-        // Set a timeout in case ICE gathering takes too long
-        setTimeout(() => {
-          if (peerConnectionRef.current?.localDescription) {
-            socketRef.current?.emit('offer', {
-              to: peerId,
-              offer: peerConnectionRef.current.localDescription
-            });
-            console.log('Sent offer after timeout');
-          }
-        }, 5000);
-      }
+        console.log('Sent offer after timeout');
+      }, 1000);
     } catch (err) {
       console.error('Error creating offer:', err);
       setError("Failed to create connection offer");
@@ -493,7 +504,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
   return (
     <div className="video-chat relative">
       {error && (
-        <div className="mb-4 p-3 bg-red-700 text-white rounded-lg shadow-lg">
+        <div className="mb-4 p-3 bg-sonic-red/20 border border-sonic-red rounded-lg text-white">
           <p className="font-bold">Connection Error:</p>
           <p>{error}</p>
           {retryCount < MAX_RETRIES ? (
@@ -516,7 +527,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
                   setError(null);
                   connectToSignalingServer();
                 }}
-                className="mt-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
+                className="mt-2 px-4 py-2 bg-sonic-blue hover:bg-sonic-blue-dark rounded-lg font-bold"
               >
                 Try Again
               </button>
@@ -528,14 +539,14 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       {/* Connection Status Indicator */}
       <div className="mb-4 text-center">
         {isConnecting && !error && (
-          <div className="inline-flex items-center px-4 py-2 bg-yellow-500 bg-opacity-20 text-yellow-500 rounded-full">
-            <div className="w-2 h-2 bg-yellow-500 rounded-full mr-2 animate-pulse"></div>
+          <div className="inline-flex items-center px-4 py-2 bg-sonic-yellow bg-opacity-20 text-sonic-yellow rounded-full">
+            <div className="w-2 h-2 bg-sonic-yellow rounded-full mr-2 animate-pulse"></div>
             Connecting to server...
           </div>
         )}
         {isConnected && !isConnecting && (
-          <div className="inline-flex items-center px-4 py-2 bg-green-500 bg-opacity-20 text-green-500 rounded-full">
-            <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
+          <div className="inline-flex items-center px-4 py-2 bg-sonic-green bg-opacity-20 text-sonic-green rounded-full">
+            <div className="w-2 h-2 bg-sonic-green rounded-full mr-2 animate-pulse"></div>
             Connected to server - Waiting for a match
           </div>
         )}
@@ -543,7 +554,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Local Video */}
-        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02]">
+        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02] border-2 border-gray-700">
           {isMounted && (
             <video
               ref={localVideoRef}
@@ -564,11 +575,11 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
         </div>
         
         {/* Remote Video */}
-        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02]">
+        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02] border-2 border-gray-700">
           {isConnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
               <div className="text-center">
-                <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-purple-500 mx-auto mb-4"></div>
+                <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-sonic-blue mx-auto mb-4"></div>
                 <p className="text-white text-lg">Finding someone to chat with...</p>
                 <p className="text-gray-400 text-sm mt-2">This might take a few moments</p>
               </div>
@@ -604,8 +615,8 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
           onClick={toggleMute}
           className={`p-4 rounded-full transition-all duration-300 ${
             isMuted 
-              ? 'bg-red-500 hover:bg-red-600' 
-              : 'bg-purple-600 hover:bg-purple-700'
+              ? 'bg-sonic-red hover:bg-sonic-red-dark' 
+              : 'bg-sonic-blue hover:bg-sonic-blue-dark'
           } text-white shadow-lg hover:shadow-xl transform hover:scale-110`}
           title={isMuted ? "Unmute" : "Mute"}
         >
@@ -616,8 +627,8 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
           onClick={toggleVideo}
           className={`p-4 rounded-full transition-all duration-300 ${
             isVideoOff 
-              ? 'bg-red-500 hover:bg-red-600' 
-              : 'bg-purple-600 hover:bg-purple-700'
+              ? 'bg-sonic-red hover:bg-sonic-red-dark' 
+              : 'bg-sonic-blue hover:bg-sonic-blue-dark'
           } text-white shadow-lg hover:shadow-xl transform hover:scale-110`}
           title={isVideoOff ? "Turn on camera" : "Turn off camera"}
         >
@@ -626,7 +637,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat, targetUserId 
 
         <button 
           onClick={handleEndChat}
-          className="p-4 rounded-full bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-xl transform hover:scale-110 transition-all duration-300"
+          className="p-4 rounded-full bg-sonic-red hover:bg-sonic-red-dark text-white shadow-lg hover:shadow-xl transform hover:scale-110 transition-all duration-300"
           title="End Chat"
         >
           <FaPhoneSlash size={24} />
