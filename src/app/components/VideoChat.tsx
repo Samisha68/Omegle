@@ -1,4 +1,5 @@
 // src/components/VideoChat.tsx
+"use client"
 import { useState, useEffect, useRef, FC } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import TipButton from './TipButton';
