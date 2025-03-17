@@ -1,36 +1,75 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OmegleSol - Video Chat with Solana Tipping
+
+OmegleSol is a decentralized video chat platform that allows users to connect with random people and send tips using Solana cryptocurrency.
+
+## Features
+
+- Random video chat connections
+- Solana wallet integration
+- Send tips to chat partners with a single click
+- Real-time video and audio communication using WebRTC
+- Modern UI with Tailwind CSS
+
+## Technology Stack
+
+- **Frontend**: Next.js, React, TypeScript, Tailwind CSS
+- **Blockchain**: Solana, Anchor Framework
+- **Video Chat**: WebRTC
+- **Wallet Integration**: Solana Wallet Adapter
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Node.js (v16 or later)
+- Yarn or npm
+- Solana CLI tools (for development)
+- A Solana wallet (Phantom, Solflare, etc.)
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Installation
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/omeglesol.git
+   cd omeglesol
+   ```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2. Install dependencies:
+   ```
+   npm install
+   ```
 
-## Learn More
+3. Run the development server:
+   ```
+   npm run dev
+   ```
 
-To learn more about Next.js, take a look at the following resources:
+4. Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Solana Program
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The tipping functionality is powered by a custom Solana program built with Anchor. The program handles the transfer of SOL from one user to another.
 
-## Deploy on Vercel
+### Program Structure
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `solana-tip/programs/solana-tip/src/lib.rs`: Contains the Solana program logic
+- `src/lib/tipProgramClient.ts`: Client-side integration with the Solana program
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deployment
+
+The application is currently deployed on Solana devnet. To use the application:
+
+1. Connect your Solana wallet
+2. Ensure you have some devnet SOL (you can get some from a faucet)
+3. Start a video chat
+4. Send tips to your chat partner
+
+## License
+
+[MIT](LICENSE)
+
+## Acknowledgements
+
+- Solana Foundation
+- Anchor Framework
+- Next.js Team
