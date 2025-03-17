@@ -16,7 +16,7 @@ const allowedOrigins = [
   'https://*.vercel.app'  // Allow all Vercel subdomains
 ].filter(Boolean);
 
-// Configure CORS for Express
+// Configure CORS for Express with specific options
 app.use(cors({
     origin: function(origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
@@ -28,10 +28,15 @@ app.use(cors({
         }
         return callback(null, true);
     },
-    methods: ['GET', 'POST'],
-    allowedHeaders: ["*"],
-    credentials: true
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Access-Control-Allow-Origin'],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
 }));
+
+// Add preflight handling middleware
+app.options('*', cors());
 
 // Configure Socket.io with improved CORS settings
 const io = new Server(server, {
@@ -45,15 +50,30 @@ const io = new Server(server, {
             }
             return callback(null, true);
         },
-        methods: ['GET', 'POST'],
-        allowedHeaders: ["*"],
-        credentials: true
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Access-Control-Allow-Origin'],
+        credentials: true,
+        preflightContinue: false,
+        optionsSuccessStatus: 204
     },
     // Add transport options to help with connection issues
     transports: ['websocket', 'polling'],
     // Add ping timeout and interval to detect disconnections faster
     pingTimeout: 10000,
-    pingInterval: 5000
+    pingInterval: 5000,
+    // Add path configuration
+    path: '/socket.io/',
+    // Add allowEIO3 option for better compatibility
+    allowEIO3: true,
+    // Add connectTimeout
+    connectTimeout: 30000,
+    // Add cookie handling
+    cookie: {
+        name: 'io',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none'
+    }
 });
 
 // Track available users waiting to be matched
@@ -274,7 +294,7 @@ app.get('/', (req, res) => {
 });
 
 // Start the server with error handling
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`Signaling server running on port ${PORT}`);
     console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);

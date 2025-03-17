@@ -11,8 +11,8 @@ interface VideoChatProps {
   onEndChat: () => void;
 }
 
-// Update the signaling server URL to use HTTPS in production
-const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com';
+// Update the signaling server URL to use the correct port
+const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com:10000';
 
 const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const { publicKey } = useWallet();
@@ -62,9 +62,13 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
           walletAddress: publicKey?.toString() || 'unknown',
           timestamp: Date.now()
         },
+        withCredentials: true,
+        autoConnect: true,
+        upgrade: true,
         extraHeaders: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
         }
       });
 
