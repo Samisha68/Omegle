@@ -12,7 +12,7 @@ interface VideoChatProps {
 }
 
 // Update the signaling server URL to use the correct port
-const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com:10000';
+const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com';
 
 const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const { publicKey } = useWallet();
@@ -49,26 +49,16 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     try {
       console.log('Attempting to connect to signaling server:', SIGNALING_SERVER);
       
+      // Simplified Socket.IO configuration that focuses on reliability
       const socket = io(SIGNALING_SERVER, {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: MAX_RETRIES,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        timeout: 30000,
-        forceNew: true,
-        path: '/socket.io/',
+        timeout: 20000,
         query: {
-          walletAddress: publicKey?.toString() || 'unknown',
-          timestamp: Date.now()
-        },
-        withCredentials: true,
-        autoConnect: true,
-        upgrade: true,
-        extraHeaders: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          walletAddress: publicKey?.toString() || 'unknown'
         }
       });
 
@@ -211,14 +201,18 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' }
+          { 
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          }
         ],
-        iceCandidatePoolSize: 10,
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require',
-        iceTransportPolicy: 'all'
+        iceCandidatePoolSize: 10
       };
       
       const peerConnection = new RTCPeerConnection(configuration);
@@ -310,10 +304,38 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       await peerConnectionRef.current.setLocalDescription(offer);
       
-      socketRef.current?.emit('offer', {
-        to: peerId,
-        offer
-      });
+      // Wait for ICE gathering to complete before sending the offer
+      if (peerConnectionRef.current.iceGatheringState === 'complete') {
+        socketRef.current?.emit('offer', {
+          to: peerId,
+          offer: peerConnectionRef.current.localDescription
+        });
+      } else {
+        // Wait for ICE gathering to complete
+        const checkState = () => {
+          if (peerConnectionRef.current?.iceGatheringState === 'complete') {
+            socketRef.current?.emit('offer', {
+              to: peerId,
+              offer: peerConnectionRef.current.localDescription
+            });
+            return true;
+          }
+          return false;
+        };
+        
+        if (!checkState()) {
+          // Set a timeout in case ICE gathering takes too long
+          setTimeout(() => {
+            if (peerConnectionRef.current?.localDescription) {
+              socketRef.current?.emit('offer', {
+                to: peerId,
+                offer: peerConnectionRef.current.localDescription
+              });
+              console.log('Sent offer after timeout');
+            }
+          }, 5000);
+        }
+      }
     } catch (err) {
       console.error('Error creating offer:', err);
       setError("Failed to create connection offer");
@@ -368,6 +390,32 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       }
     }
   };
+
+  // Add this new function to help with debugging
+  const logConnectionState = () => {
+    if (!peerConnectionRef.current) return;
+    
+    console.log('Connection debug info:');
+    console.log('- ICE Connection State:', peerConnectionRef.current.iceConnectionState);
+    console.log('- ICE Gathering State:', peerConnectionRef.current.iceGatheringState);
+    console.log('- Signaling State:', peerConnectionRef.current.signalingState);
+    console.log('- Connection State:', peerConnectionRef.current.connectionState);
+    
+    // Check for remote streams
+    const receivers = peerConnectionRef.current.getReceivers();
+    console.log('- Remote streams:', receivers.length);
+    
+    // Log socket connection state
+    console.log('- Socket connected:', socketRef.current?.connected);
+  };
+
+  useEffect(() => {
+    if (peerConnectionRef.current && isConnected) {
+      // Log connection state every 5 seconds for debugging
+      const interval = setInterval(logConnectionState, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [isConnected]);
 
   return (
     <div className="video-chat relative">

@@ -3,15 +3,29 @@
     "version": "1.0.0",
     "main": "index.js",
     "scripts": {
-      "start": "node index.js",
-      "dev": "nodemon index.js"
+        "start": "node index.js",
+        "dev": "nodemon index.js"
     },
     "dependencies": {
-      "express": "^4.18.2",
-      "socket.io": "^4.7.2",
-      "cors": "^2.8.5"
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.18.2",
+        "socket.io": "^4.7.2",
+        "twilio": "^5.5.0"
     },
     "engines": {
-      "node": ">=16.0.0"
-    }
-  }
+        "node": ">=16.0.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Samisha68/signaling-server.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "bugs": {
+        "url": "https://github.com/Samisha68/signaling-server/issues"
+    },
+    "homepage": "https://github.com/Samisha68/signaling-server#readme",
+    "description": ""
+}
