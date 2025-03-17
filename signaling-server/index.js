@@ -12,12 +12,22 @@ const server = http.createServer(app);
 const allowedOrigins = [
   process.env.CLIENT_URL,
   'http://localhost:3000',
-  'https://omegle-alpha.vercel.app'
+  'https://omegle-alpha.vercel.app',
+  'https://*.vercel.app'  // Allow all Vercel subdomains
 ].filter(Boolean);
 
 // Configure CORS for Express
 app.use(cors({
-    origin: allowedOrigins,
+    origin: function(origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) === -1) {
+            const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
     methods: ['GET', 'POST'],
     allowedHeaders: ["*"],
     credentials: true
@@ -26,7 +36,15 @@ app.use(cors({
 // Configure Socket.io with improved CORS settings
 const io = new Server(server, {
     cors: {
-        origin: allowedOrigins,
+        origin: function(origin, callback) {
+            if (!origin) return callback(null, true);
+            
+            if (allowedOrigins.indexOf(origin) === -1) {
+                const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+                return callback(new Error(msg), false);
+            }
+            return callback(null, true);
+        },
         methods: ['GET', 'POST'],
         allowedHeaders: ["*"],
         credentials: true

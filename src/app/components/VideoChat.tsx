@@ -18,6 +18,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [peerWalletAddress, setPeerWalletAddress] = useState<string>('');
+  const [isClient, setIsClient] = useState<boolean>(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -25,8 +26,15 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<Socket | null>(null);
   
+  // Add useEffect to handle client-side rendering
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+  
   // Connect to signaling server and set up media
   useEffect(() => {
+    if (!isClient) return; // Don't run on server-side
+
     const startConnection = async () => {
       try {
         // Get local media stream
@@ -41,12 +49,18 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         }
         
         // Connect to signaling server
-        const socket = io(SIGNALING_SERVER);
+        const socket = io(SIGNALING_SERVER, {
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000
+        });
         socketRef.current = socket;
         
         // Set up socket event handlers
         socket.on('connect', () => {
           console.log('Connected to signaling server');
+          setIsConnecting(false);
           
           // Tell server we're waiting for a match
           socket.emit('waiting', {
@@ -241,13 +255,15 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="relative">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            muted
-            playsInline
-            className="w-full rounded-lg bg-black"
-          />
+          {isClient && (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              muted
+              playsInline
+              className="w-full rounded-lg bg-black"
+            />
+          )}
           <div className="absolute bottom-2 left-2 bg-black bg-opacity-70 text-white text-sm px-2 py-1 rounded">
             You {publicKey?.toString().slice(0, 6)}...
           </div>
@@ -263,12 +279,14 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
             </div>
           )}
           
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            className="w-full rounded-lg bg-black"
-          />
+          {isClient && (
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full rounded-lg bg-black"
+            />
+          )}
           
           {isConnected && (
             <>
