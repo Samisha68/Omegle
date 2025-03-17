@@ -4,13 +4,15 @@ import { useState, useEffect, useRef, FC } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import TipButton from './TipButton';
 import { io, Socket } from 'socket.io-client';
+import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash, FaPhoneSlash } from 'react-icons/fa';
 
 interface VideoChatProps {
   onPeerConnect: (connection: RTCPeerConnection, walletAddress: string) => void;
   onEndChat: () => void;
 }
 
-const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'http://localhost:4000';
+// Update the signaling server URL to use HTTPS in production
+const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER || 'https://solana-video-chat-signaling.onrender.com';
 
 const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const { publicKey } = useWallet();
@@ -19,18 +21,140 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
   const [error, setError] = useState<string | null>(null);
   const [peerWalletAddress, setPeerWalletAddress] = useState<string>('');
   const [isMounted, setIsMounted] = useState<boolean>(false);
+  const [retryCount, setRetryCount] = useState<number>(0);
+  const MAX_RETRIES = 3;
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isVideoOff, setIsVideoOff] = useState<boolean>(false);
+  const [isHovering, setIsHovering] = useState<boolean>(false);
 
   // Handle component mounting
   useEffect(() => {
     setIsMounted(true);
-    return () => setIsMounted(false);
+    return () => {
+      setIsMounted(false);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
   }, []);
+
+  const connectToSignalingServer = () => {
+    try {
+      console.log('Attempting to connect to signaling server:', SIGNALING_SERVER);
+      
+      const socket = io(SIGNALING_SERVER, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: MAX_RETRIES,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 30000,
+        forceNew: true,
+        path: '/socket.io/',
+        query: {
+          walletAddress: publicKey?.toString() || 'unknown',
+          timestamp: Date.now()
+        },
+        extraHeaders: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
+        }
+      });
+
+      socketRef.current = socket;
+
+      socket.on('connect', () => {
+        console.log('Connected to signaling server successfully');
+        setIsConnecting(false);
+        setIsConnected(true);
+        setRetryCount(0);
+        setError(null);
+        
+        // Tell server we're waiting for a match
+        socket.emit('waiting', {
+          walletAddress: publicKey?.toString() || 'unknown',
+          timestamp: Date.now()
+        });
+      });
+
+      socket.on('connect_error', (err) => {
+        console.error('Connection error:', err);
+        setError(`Failed to connect to signaling server: ${err.message}`);
+        setIsConnected(false);
+        
+        // Attempt to reconnect if we haven't exceeded max retries
+        if (retryCount < MAX_RETRIES) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            setRetryCount(prev => prev + 1);
+            connectToSignalingServer();
+          }, 2000);
+        }
+      });
+
+      socket.on('disconnect', (reason) => {
+        console.log('Disconnected from signaling server:', reason);
+        setIsConnected(false);
+        
+        if (reason === 'io server disconnect') {
+          // Server initiated disconnect, try to reconnect
+          socket.connect();
+        }
+      });
+
+      socket.on('matched', ({ peer, peerWallet }) => {
+        console.log(`Matched with peer: ${peer}`);
+        setPeerWalletAddress(peerWallet);
+        createPeerConnection(peer);
+      });
+
+      socket.on('offer', async ({ from, offer }) => {
+        console.log(`Received offer from: ${from}`);
+        if (!peerConnectionRef.current) {
+          createPeerConnection(from);
+        }
+        
+        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnectionRef.current?.createAnswer();
+        await peerConnectionRef.current?.setLocalDescription(answer);
+        
+        socket.emit('answer', {
+          to: from,
+          answer
+        });
+      });
+
+      socket.on('answer', async ({ from, answer }) => {
+        console.log(`Received answer from: ${from}`);
+        await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
+      });
+
+      socket.on('ice-candidate', async ({ from, candidate }) => {
+        console.log(`Received ICE candidate from: ${from}`);
+        try {
+          await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error('Error adding ICE candidate:', err);
+        }
+      });
+
+      socket.on('chat-ended', ({ reason }) => {
+        console.log(`Chat ended: ${reason}`);
+        cleanupAndReset();
+        onEndChat();
+      });
+
+    } catch (err) {
+      console.error('Error in connectToSignalingServer:', err);
+      setError("Failed to establish connection to signaling server");
+    }
+  };
 
   // Connect to signaling server and set up media
   useEffect(() => {
@@ -57,87 +181,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         }
         
         // Connect to signaling server
-        const socket = io(SIGNALING_SERVER, {
-          transports: ['websocket', 'polling'],
-          reconnection: true,
-          reconnectionAttempts: 5,
-          reconnectionDelay: 1000,
-          forceNew: true
-        });
-        socketRef.current = socket;
-        
-        // Set up socket event handlers
-        socket.on('connect', () => {
-          if (!mounted) return;
-          console.log('Connected to signaling server');
-          setIsConnecting(false);
-          setIsConnected(true);
-          
-          // Tell server we're waiting for a match
-          socket.emit('waiting', {
-            walletAddress: publicKey?.toString() || 'unknown'
-          });
-        });
-        
-        socket.on('connect_error', (err) => {
-          if (!mounted) return;
-          console.error('Connection error:', err);
-          setError(`Failed to connect to signaling server: ${err.message}`);
-        });
-        
-        socket.on('matched', ({ peer, peerWallet }) => {
-          if (!mounted) return;
-          console.log(`Matched with peer: ${peer}`);
-          setPeerWalletAddress(peerWallet);
-          
-          // Create WebRTC connection
-          createPeerConnection(peer);
-        });
-        
-        socket.on('offer', async ({ from, offer }) => {
-          if (!mounted) return;
-          console.log(`Received offer from: ${from}`);
-          if (!peerConnectionRef.current) {
-            createPeerConnection(from);
-          }
-          
-          await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(offer));
-          
-          // Create answer
-          const answer = await peerConnectionRef.current?.createAnswer();
-          await peerConnectionRef.current?.setLocalDescription(answer);
-          
-          // Send answer to peer
-          socket.emit('answer', {
-            to: from,
-            answer
-          });
-        });
-        
-        socket.on('answer', async ({ from, answer }) => {
-          if (!mounted) return;
-          console.log(`Received answer from: ${from}`);
-          await peerConnectionRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
-        });
-        
-        socket.on('ice-candidate', async ({ from, candidate }) => {
-          if (!mounted) return;
-          console.log(`Received ICE candidate from: ${from}`);
-          try {
-            await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-          } catch (err) {
-            console.error('Error adding ICE candidate:', err);
-          }
-        });
-        
-        socket.on('chat-ended', ({ reason }) => {
-          if (!mounted) return;
-          console.log(`Chat ended: ${reason}`);
-          cleanupAndReset();
-          
-          // Notify parent component
-          onEndChat();
-        });
+        connectToSignalingServer();
         
       } catch (err) {
         if (!mounted) return;
@@ -153,15 +197,24 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       mounted = false;
       cleanupAndReset();
     };
-  }, [isMounted, publicKey, onPeerConnect, onEndChat]);
+  }, [isMounted, publicKey, onPeerConnect, onEndChat, retryCount]);
   
   const createPeerConnection = (peerId: string) => {
     try {
+      console.log('Creating peer connection with:', peerId);
+      
       const configuration: RTCConfiguration = { 
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ] 
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceTransportPolicy: 'all'
       };
       
       const peerConnection = new RTCPeerConnection(configuration);
@@ -179,6 +232,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       // Set up event handlers for the peer connection
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log('New ICE candidate:', event.candidate.type);
           socketRef.current?.emit('ice-candidate', {
             to: peerId,
             candidate: event.candidate
@@ -186,24 +240,44 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         }
       };
       
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', peerConnection.iceConnectionState);
+        switch (peerConnection.iceConnectionState) {
+          case 'connected':
+            console.log('ICE connection established');
+            break;
+          case 'disconnected':
+          case 'failed':
+          case 'closed':
+            console.log('ICE connection failed or closed');
+            cleanupAndReset();
+            break;
+        }
+      };
+      
       peerConnection.ontrack = (event) => {
+        console.log('Received remote track');
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
+          setIsConnecting(false);
+          setIsConnected(true);
+          onPeerConnect(peerConnection, peerWalletAddress);
         }
       };
       
       peerConnection.onconnectionstatechange = () => {
+        console.log('Connection state changed:', peerConnection.connectionState);
         switch (peerConnection.connectionState) {
           case 'connected':
+            console.log('Peer connection established');
             setIsConnecting(false);
             setIsConnected(true);
-            
-            // Notify parent component
             onPeerConnect(peerConnection, peerWalletAddress);
             break;
           case 'disconnected':
           case 'failed':
           case 'closed':
+            console.log('Peer connection failed or closed');
             cleanupAndReset();
             break;
         }
@@ -215,8 +289,8 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       }
       
     } catch (err) {
+      console.error('Error creating peer connection:', err);
       setError("Failed to create peer connection");
-      console.error(err);
     }
   };
   
@@ -224,7 +298,12 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     try {
       if (!peerConnectionRef.current) return;
       
-      const offer = await peerConnectionRef.current.createOffer();
+      console.log('Creating and sending offer to:', peerId);
+      const offer = await peerConnectionRef.current.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
+      
       await peerConnectionRef.current.setLocalDescription(offer);
       
       socketRef.current?.emit('offer', {
@@ -233,6 +312,7 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
       });
     } catch (err) {
       console.error('Error creating offer:', err);
+      setError("Failed to create connection offer");
     }
   };
   
@@ -265,36 +345,69 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
     onEndChat();
   };
   
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!isMuted);
+      }
+    }
+  };
+
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOff(!isVideoOff);
+      }
+    }
+  };
+
   return (
-    <div className="video-chat">
+    <div className="video-chat relative">
       {error && (
-        <div className="mb-4 p-3 bg-red-700 text-white rounded">
+        <div className="mb-4 p-3 bg-red-700 text-white rounded-lg shadow-lg">
           {error}
+          {retryCount < MAX_RETRIES && (
+            <div className="mt-2 text-sm">
+              Retrying connection... ({retryCount + 1}/{MAX_RETRIES})
+            </div>
+          )}
         </div>
       )}
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="relative">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Local Video */}
+        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02]">
           {isMounted && (
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className="w-full rounded-lg bg-black"
+              className="w-full aspect-video object-cover"
             />
           )}
-          <div className="absolute bottom-2 left-2 bg-black bg-opacity-70 text-white text-sm px-2 py-1 rounded">
+          <div className="absolute bottom-4 left-4 bg-black bg-opacity-60 text-white px-4 py-2 rounded-full backdrop-blur-sm">
             You {publicKey?.toString().slice(0, 6)}...
           </div>
+          {isVideoOff && (
+            <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
+              <div className="text-white text-2xl">Camera Off</div>
+            </div>
+          )}
         </div>
         
-        <div className="relative">
+        {/* Remote Video */}
+        <div className="relative group rounded-xl overflow-hidden shadow-2xl transform transition-all duration-300 hover:scale-[1.02]">
           {isConnecting && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gray-900 rounded-lg">
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
               <div className="text-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-                <p>Finding someone to chat with...</p>
+                <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-purple-500 mx-auto mb-4"></div>
+                <p className="text-white text-lg">Finding someone to chat with...</p>
+                <p className="text-gray-400 text-sm mt-2">This might take a few moments</p>
               </div>
             </div>
           )}
@@ -304,17 +417,17 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
               ref={remoteVideoRef}
               autoPlay
               playsInline
-              className="w-full rounded-lg bg-black"
+              className="w-full aspect-video object-cover"
             />
           )}
           
           {isConnected && (
             <>
-              <div className="absolute bottom-2 left-2 bg-black bg-opacity-70 text-white text-sm px-2 py-1 rounded">
+              <div className="absolute bottom-4 left-4 bg-black bg-opacity-60 text-white px-4 py-2 rounded-full backdrop-blur-sm">
                 Peer {peerWalletAddress.slice(0, 6)}...
               </div>
               
-              <div className="absolute bottom-2 right-2">
+              <div className="absolute bottom-4 right-4">
                 <TipButton recipientAddress={peerWalletAddress} />
               </div>
             </>
@@ -322,14 +435,50 @@ const VideoChat: FC<VideoChatProps> = ({ onPeerConnect, onEndChat }) => {
         </div>
       </div>
       
-      <div className="mt-6 flex justify-center">
+      {/* Controls Bar */}
+      <div className="mt-8 flex justify-center items-center space-x-4">
+        <button 
+          onClick={toggleMute}
+          className={`p-4 rounded-full transition-all duration-300 ${
+            isMuted 
+              ? 'bg-red-500 hover:bg-red-600' 
+              : 'bg-purple-600 hover:bg-purple-700'
+          } text-white shadow-lg hover:shadow-xl transform hover:scale-110`}
+          title={isMuted ? "Unmute" : "Mute"}
+        >
+          {isMuted ? <FaMicrophoneSlash size={24} /> : <FaMicrophone size={24} />}
+        </button>
+
+        <button 
+          onClick={toggleVideo}
+          className={`p-4 rounded-full transition-all duration-300 ${
+            isVideoOff 
+              ? 'bg-red-500 hover:bg-red-600' 
+              : 'bg-purple-600 hover:bg-purple-700'
+          } text-white shadow-lg hover:shadow-xl transform hover:scale-110`}
+          title={isVideoOff ? "Turn on camera" : "Turn off camera"}
+        >
+          {isVideoOff ? <FaVideoSlash size={24} /> : <FaVideo size={24} />}
+        </button>
+
         <button 
           onClick={handleEndChat}
-          className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg transition duration-300"
+          className="p-4 rounded-full bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-xl transform hover:scale-110 transition-all duration-300"
+          title="End Chat"
         >
-          End Chat
+          <FaPhoneSlash size={24} />
         </button>
       </div>
+
+      {/* Connection Status */}
+      {isConnected && (
+        <div className="mt-4 text-center">
+          <div className="inline-flex items-center px-4 py-2 bg-green-500 bg-opacity-20 text-green-500 rounded-full">
+            <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
+            Connected
+          </div>
+        </div>
+      )}
     </div>
   );
 };
